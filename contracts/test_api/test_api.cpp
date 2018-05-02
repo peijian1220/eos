@@ -136,7 +136,7 @@ extern "C" {
       WASM_TEST_HANDLER_EX(test_transaction, send_transaction_expiring_late);
       WASM_TEST_HANDLER(test_transaction, deferred_print);
       WASM_TEST_HANDLER_EX(test_transaction, send_deferred_transaction);
-      WASM_TEST_HANDLER(test_transaction, send_deferred_tx_given_payer);
+      WASM_TEST_HANDLER(test_transaction, send_deferred_tx_with_dtt_action);
       WASM_TEST_HANDLER(test_transaction, cancel_deferred_transaction);
       WASM_TEST_HANDLER(test_transaction, send_cf_action);
       WASM_TEST_HANDLER(test_transaction, send_cf_action_fail);
