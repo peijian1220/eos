@@ -12,6 +12,20 @@ namespace Runtime
 {
 	RUNTIME_API IntrinsicResolver IntrinsicResolver::singleton;
 
+	bool isA(ObjectInstance* object,const ObjectType& type)
+	{
+		if(type.kind != object->kind) { return false; }
+
+		switch(type.kind)
+		{
+		case ObjectKind::function: return asFunctionType(type) == asFunction(object)->type;
+		case ObjectKind::global: return asGlobalType(type) == asGlobal(object)->type;
+		case ObjectKind::table: return isSubset(asTableType(type),asTable(object)->type);
+		case ObjectKind::memory: return isSubset(asMemoryType(type),asMemory(object)->type);
+		default: Errors::unreachable();
+		}
+	}
+
 	bool IntrinsicResolver::resolve(const std::string& moduleName,const std::string& exportName,ObjectType type,ObjectInstance*& outObject)
 	{
 		// Make sure the wavmIntrinsics module can't be directly imported.
@@ -37,7 +51,7 @@ namespace Runtime
 		if(resolver.resolve(import.moduleName,import.exportName,resolveImportType(module,import.type),importValue))
 		{
 			// Sanity check that the resolver returned an object of the right type.
-			assert(isA(importValue,resolveImportType(module,import.type)));
+			WAVM_ASSERT_THROW(isA(importValue,resolveImportType(module,import.type)));
 			resolvedImports.push_back(as<Instance>(importValue));
 		}
 		else { linkResult.missingImports.push_back({import.moduleName,import.exportName,resolveImportType(module,import.type)}); }

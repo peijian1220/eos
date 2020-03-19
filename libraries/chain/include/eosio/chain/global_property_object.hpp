@@ -1,7 +1,3 @@
-/**
- *  @file
- *  @copyright defined in eos/LICENSE.txt
- */
 #pragma once
 #include <fc/uint128.hpp>
 #include <fc/array.hpp>
@@ -9,99 +5,56 @@
 #include <eosio/chain/types.hpp>
 #include <eosio/chain/block_timestamp.hpp>
 #include <eosio/chain/chain_config.hpp>
+#include <eosio/chain/chain_snapshot.hpp>
 #include <eosio/chain/producer_schedule.hpp>
 #include <eosio/chain/incremental_merkle.hpp>
+#include <eosio/chain/snapshot.hpp>
 #include <chainbase/chainbase.hpp>
 #include "multi_index_includes.hpp"
 
 namespace eosio { namespace chain {
 
-   struct blocknum_producer_schedule {
-      blocknum_producer_schedule( allocator<char> a )
-      :second(a){}
+   /**
+    * a fc::raw::unpack compatible version of the old global_property_object structure stored in
+    * version 2 snapshots and before
+    */
+   namespace legacy {
+      struct snapshot_global_property_object_v2 {
+         static constexpr uint32_t minimum_version = 0;
+         static constexpr uint32_t maximum_version = 2;
+         static_assert(chain_snapshot_header::minimum_compatible_version <= maximum_version, "snapshot_global_property_object_v2 is no longer needed");
 
-      block_num_type                first;
-      shared_producer_schedule_type second;
-   };
+         optional<block_num_type>         proposed_schedule_block_num;
+         producer_schedule_type           proposed_schedule;
+         chain_config                     configuration;
+      };
+   }
 
    /**
     * @class global_property_object
-    * @brief Maintains global state information (committee_member list, current fees)
+    * @brief Maintains global state information about block producer schedules and chain configuration parameters
     * @ingroup object
     * @ingroup implementation
-    *
-    * This is an implementation detail. The values here are set by committee_members to tune the blockchain parameters.
     */
    class global_property_object : public chainbase::object<global_property_object_type, global_property_object>
    {
-      OBJECT_CTOR(global_property_object, (active_producers)(new_active_producers)(pending_active_producers) )
+      OBJECT_CTOR(global_property_object, (proposed_schedule))
 
-      id_type                                                  id;
-      chain_config                                             configuration;
-      shared_producer_schedule_type                            active_producers;
-      shared_producer_schedule_type                            new_active_producers;
+   public:
+      id_type                             id;
+      optional<block_num_type>            proposed_schedule_block_num;
+      shared_producer_authority_schedule  proposed_schedule;
+      chain_config                        configuration;
+      chain_id_type                       chain_id;
 
-      /** every block that has change in producer schedule gets inserted into this list, this includes
-       * all blocks that see a change in producer signing keys or vote order.
-       *
-       * TODO: consider moving this to a more effeicent datatype
-       */
-      shared_vector< blocknum_producer_schedule > pending_active_producers;
+      void initalize_from( const legacy::snapshot_global_property_object_v2& legacy, const chain_id_type& chain_id_val ) {
+         proposed_schedule_block_num = legacy.proposed_schedule_block_num;
+         proposed_schedule = producer_authority_schedule(legacy.proposed_schedule).to_shared(proposed_schedule.producers.get_allocator());
+         configuration = legacy.configuration;
+         chain_id = chain_id_val;
+      }
    };
 
-
-
-   /**
-    * @class dynamic_global_property_object
-    * @brief Maintains global state information (committee_member list, current fees)
-    * @ingroup object
-    * @ingroup implementation
-    *
-    * This is an implementation detail. The values here are calculated during normal chain operations and reflect the
-    * current values of global blockchain properties.
-    */
-   class dynamic_global_property_object : public chainbase::object<dynamic_global_property_object_type, dynamic_global_property_object>
-   {
-        OBJECT_CTOR(dynamic_global_property_object, (block_merkle_root))
-
-        id_type              id;
-        uint32_t             head_block_number = 0;
-        block_id_type        head_block_id;
-        time_point           time;
-        account_name         current_producer;
-
-        /**
-         * The current absolute slot number.  Equal to the total
-         * number of slots since genesis.  Also equal to the total
-         * number of missed slots plus head_block_number.
-         */
-        uint64_t          current_absolute_slot = 0;
-
-        /**
-         * Bitmap used to compute producer participation. Stores
-         * a high bit for each generated block, a low bit for
-         * each missed block. Least significant bit is most
-         * recent block.
-         *
-         * NOTE: This bitmap always excludes the head block,
-         * which, by definition, exists. The least significant
-         * bit corresponds to the block with number
-         * head_block_num()-1
-         *
-         * e.g. if the least significant 5 bits were 10011, it
-         * would indicate that the last two blocks prior to the
-         * head block were produced, the two before them were
-         * missed, and the one before that was produced.
-         */
-        //uint64_t recent_slots_filled;
-
-        uint32_t last_irreversible_block_num = 0;
-
-        /**
-         * Used to calculate the merkle root over all blocks
-         */
-        shared_incremental_merkle  block_merkle_root;
-   };
 
    using global_property_multi_index = chainbase::shared_multi_index_container<
       global_property_object,
@@ -111,6 +64,46 @@ namespace eosio { namespace chain {
          >
       >
    >;
+
+   struct snapshot_global_property_object {
+      optional<block_num_type>            proposed_schedule_block_num;
+      producer_authority_schedule         proposed_schedule;
+      chain_config                        configuration;
+      chain_id_type                       chain_id;
+   };
+
+   namespace detail {
+      template<>
+      struct snapshot_row_traits<global_property_object> {
+         using value_type = global_property_object;
+         using snapshot_type = snapshot_global_property_object;
+
+         static snapshot_global_property_object to_snapshot_row( const global_property_object& value, const chainbase::database& ) {
+            return {value.proposed_schedule_block_num, producer_authority_schedule::from_shared(value.proposed_schedule), value.configuration, value.chain_id};
+         }
+
+         static void from_snapshot_row( snapshot_global_property_object&& row, global_property_object& value, chainbase::database& ) {
+            value.proposed_schedule_block_num = row.proposed_schedule_block_num;
+            value.proposed_schedule = row.proposed_schedule.to_shared(value.proposed_schedule.producers.get_allocator());
+            value.configuration = row.configuration;
+            value.chain_id = row.chain_id;
+         }
+      };
+   }
+
+   /**
+    * @class dynamic_global_property_object
+    * @brief Maintains global state information that frequently change
+    * @ingroup object
+    * @ingroup implementation
+    */
+   class dynamic_global_property_object : public chainbase::object<dynamic_global_property_object_type, dynamic_global_property_object>
+   {
+        OBJECT_CTOR(dynamic_global_property_object)
+
+        id_type    id;
+        uint64_t   global_action_sequence = 0;
+   };
 
    using dynamic_global_property_multi_index = chainbase::shared_multi_index_container<
       dynamic_global_property_object,
@@ -127,17 +120,18 @@ CHAINBASE_SET_INDEX_TYPE(eosio::chain::global_property_object, eosio::chain::glo
 CHAINBASE_SET_INDEX_TYPE(eosio::chain::dynamic_global_property_object,
                          eosio::chain::dynamic_global_property_multi_index)
 
-FC_REFLECT(eosio::chain::dynamic_global_property_object,
-           (head_block_number)
-           (head_block_id)
-           (time)
-           (current_producer)
-           (current_absolute_slot)
-           /* (recent_slots_filled) */
-           (last_irreversible_block_num)
+FC_REFLECT(eosio::chain::global_property_object,
+            (proposed_schedule_block_num)(proposed_schedule)(configuration)(chain_id)
           )
 
-FC_REFLECT(eosio::chain::global_property_object,
-           (configuration)
-           (active_producers)
+FC_REFLECT(eosio::chain::legacy::snapshot_global_property_object_v2,
+            (proposed_schedule_block_num)(proposed_schedule)(configuration)
+          )
+
+FC_REFLECT(eosio::chain::snapshot_global_property_object,
+            (proposed_schedule_block_num)(proposed_schedule)(configuration)(chain_id)
+          )
+
+FC_REFLECT(eosio::chain::dynamic_global_property_object,
+            (global_action_sequence)
           )

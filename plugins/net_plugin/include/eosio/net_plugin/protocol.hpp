@@ -1,7 +1,3 @@
-/**
- *  @file
- *  @copyright defined in eos/LICENSE.txt
- */
 #pragma once
 #include <eosio/chain/block.hpp>
 #include <eosio/chain/types.hpp>
@@ -14,12 +10,26 @@ namespace eosio {
    static_assert(sizeof(std::chrono::system_clock::duration::rep) >= 8, "system_clock is expected to be at least 64 bits");
    typedef std::chrono::system_clock::duration::rep tstamp;
 
+   struct chain_size_message {
+      uint32_t                   last_irreversible_block_num = 0;
+      block_id_type              last_irreversible_block_id;
+      uint32_t                   head_num = 0;
+      block_id_type              head_id;
+   };
+
+   // Longest domain name is 253 characters according to wikipedia.
+   // Addresses include ":port" where max port is 65535, which adds 6 chars.
+   // We also add our own extentions of "[:trx|:blk] - xxxxxxx", which adds 14 chars, total= 273.
+   // Allow for future extentions as well, hence 384.
+   constexpr size_t max_p2p_address_length = 253 + 6;
+   constexpr size_t max_handshake_str_length = 384;
+
    struct handshake_message {
       uint16_t                   network_version = 0; ///< incremental value above a computed base
       chain_id_type              chain_id; ///< used to identify chain
       fc::sha256                 node_id; ///< used to identify peers and prevent self-connect
       chain::public_key_type     key; ///< authentication key; may be a producer or peer key, or empty
-      tstamp                     time;
+      tstamp                     time{0};
       fc::sha256                 token; ///< digest of time to prove we own the private key of the key above
       chain::signature_type      sig; ///< signature for the digest
       string                     p2p_address;
@@ -29,8 +39,9 @@ namespace eosio {
       block_id_type              head_id;
       string                     os;
       string                     agent;
-      int16_t                    generation;
+      int16_t                    generation = 0;
    };
+
 
   enum go_away_reason {
     no_reason, ///< no reason to go away
@@ -60,28 +71,23 @@ namespace eosio {
     case validation : return "invalid block";
     case authentication : return "authentication failure";
     case fatal_other : return "some other failure";
-    case benign_other : return "some other non-fatal condition";
+    case benign_other : return "some other non-fatal condition, possibly unknown block";
     default : return "some crazy reason";
     }
   }
 
   struct go_away_message {
-    go_away_message (go_away_reason r = no_reason) : reason(r), node_id() {}
-    go_away_reason reason;
+    go_away_message(go_away_reason r = no_reason) : reason(r), node_id() {}
+    go_away_reason reason{no_reason};
     fc::sha256 node_id; ///< for duplicate notification
   };
 
-   typedef std::chrono::system_clock::duration::rep tstamp;
-   typedef int32_t                                  tdist;
-
-   static_assert(sizeof(std::chrono::system_clock::duration::rep) >= 8, "system_clock is expected to be at least 64 bits");
-
-   struct time_message {
-              tstamp  org;       //!< origin timestamp
-              tstamp  rec;       //!< receive timestamp
-              tstamp  xmt;       //!< transmit timestamp
-      mutable tstamp  dst;       //!< destination timestamp
-   };
+  struct time_message {
+            tstamp  org{0};       //!< origin timestamp
+            tstamp  rec{0};       //!< receive timestamp
+            tstamp  xmt{0};       //!< transmit timestamp
+    mutable tstamp  dst{0};       //!< destination timestamp
+  };
 
   enum id_list_modes {
     none,
@@ -102,9 +108,9 @@ namespace eosio {
 
   template<typename T>
   struct select_ids {
-    select_ids () : mode(none),pending(0),ids() {}
-    id_list_modes  mode;
-    uint32_t       pending;
+    select_ids() : mode(none),pending(0),ids() {}
+    id_list_modes  mode{none};
+    uint32_t       pending{0};
     vector<T>      ids;
     bool           empty () const { return (mode == none || ids.empty()); }
   };
@@ -113,36 +119,38 @@ namespace eosio {
   using ordered_blk_ids = select_ids<block_id_type>;
 
   struct notice_message {
-    notice_message () : known_trx(), known_blocks() {}
+    notice_message() : known_trx(), known_blocks() {}
     ordered_txn_ids known_trx;
     ordered_blk_ids known_blocks;
   };
 
   struct request_message {
-    request_message () : req_trx(), req_blocks() {}
+    request_message() : req_trx(), req_blocks() {}
     ordered_txn_ids req_trx;
     ordered_blk_ids req_blocks;
   };
 
    struct sync_request_message {
-      uint32_t start_block;
-      uint32_t end_block;
+      uint32_t start_block{0};
+      uint32_t end_block{0};
    };
 
    using net_message = static_variant<handshake_message,
+                                      chain_size_message,
                                       go_away_message,
                                       time_message,
                                       notice_message,
                                       request_message,
                                       sync_request_message,
-                                      signed_block_summary,
-                                      signed_block,
-                                      signed_transaction,
-                                      packed_transaction>;
+                                      signed_block,         // which = 7
+                                      packed_transaction>;  // which = 8
 
 } // namespace eosio
 
 FC_REFLECT( eosio::select_ids<fc::sha256>, (mode)(pending)(ids) )
+FC_REFLECT( eosio::chain_size_message,
+            (last_irreversible_block_num)(last_irreversible_block_id)
+            (head_num)(head_id))
 FC_REFLECT( eosio::handshake_message,
             (network_version)(chain_id)(node_id)(key)
             (time)(token)(sig)(p2p_address)

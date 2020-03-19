@@ -1,46 +1,64 @@
-/**
- *  @file
- *  @copyright defined in eos/LICENSE.txt
- */
 #include <eosio/chain/block.hpp>
-#include <eosio/chain/merkle.hpp>
-#include <fc/io/raw.hpp>
-#include <fc/bitutil.hpp>
-#include <algorithm>
 
 namespace eosio { namespace chain {
-   digest_type block_header::digest()const
-   {
-      return digest_type::hash(*this);
+   void additional_block_signatures_extension::reflector_init() {
+      static_assert( fc::raw::has_feature_reflector_init_on_unpacked_reflected_types,
+                     "additional_block_signatures_extension expects FC to support reflector_init" );
+
+      EOS_ASSERT( signatures.size() > 0, ill_formed_additional_block_signatures_extension,
+                  "Additional block signatures extension must contain at least one signature",
+      );
+
+      set<signature_type> unique_sigs;
+
+      for( const auto& s : signatures ) {
+         auto res = unique_sigs.insert( s );
+         EOS_ASSERT( res.second, ill_formed_additional_block_signatures_extension,
+                     "Signature ${s} was repeated in the additional block signatures extension",
+                     ("s", s)
+         );
+      }
    }
 
-   uint32_t block_header::num_from_id(const block_id_type& id)
-   {
-      return fc::endian_reverse_u32(id._hash[0]);
+   flat_multimap<uint16_t, block_extension> signed_block::validate_and_extract_extensions()const {
+      using decompose_t = block_extension_types::decompose_t;
+
+      flat_multimap<uint16_t, block_extension> results;
+
+      uint16_t id_type_lower_bound = 0;
+
+      for( size_t i = 0; i < block_extensions.size(); ++i ) {
+         const auto& e = block_extensions[i];
+         auto id = e.first;
+
+         EOS_ASSERT( id >= id_type_lower_bound, invalid_block_extension,
+                     "Block extensions are not in the correct order (ascending id types required)"
+         );
+
+         auto iter = results.emplace(std::piecewise_construct,
+            std::forward_as_tuple(id),
+            std::forward_as_tuple()
+         );
+
+         auto match = decompose_t::extract<block_extension>( id, e.second, iter->second );
+         EOS_ASSERT( match, invalid_block_extension,
+                     "Block extension with id type ${id} is not supported",
+                     ("id", id)
+         );
+
+         if( match->enforce_unique ) {
+            EOS_ASSERT( i == 0 || id > id_type_lower_bound, invalid_block_header_extension,
+                        "Block extension with id type ${id} is not allowed to repeat",
+                        ("id", id)
+            );
+         }
+
+
+         id_type_lower_bound = id;
+      }
+
+      return results;
+
    }
 
-   block_id_type signed_block_header::id()const
-   {
-      // Do not include signed_block_header attributes in id, specifically exclude producer_signature.
-      block_id_type result = fc::sha256::hash(*static_cast<const block_header*>(this));
-      result._hash[0] &= 0xffffffff00000000;
-      result._hash[0] += fc::endian_reverse_u32(block_num()); // store the block num in the ID, 160 bits is plenty for the hash
-      return result;
-   }
-
-   public_key_type signed_block_header::signee()const
-   {
-      return fc::crypto::public_key(producer_signature, digest(), true/*enforce canonical*/);
-   }
-
-   void signed_block_header::sign(const private_key_type& signer)
-   {
-      producer_signature = signer.sign(digest());
-   }
-
-   bool signed_block_header::validate_signee(const public_key_type& expected_signee)const
-   {
-      return signee() == expected_signee;
-   }
-
-} }
+} } /// namespace eosio::chain

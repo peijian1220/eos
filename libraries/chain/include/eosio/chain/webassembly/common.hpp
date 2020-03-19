@@ -7,9 +7,10 @@
 
 using namespace fc;
 
-namespace eosio { namespace chain { 
+namespace eosio { namespace chain {
 
    class apply_context;
+   class transaction_context;
 
    template<typename T>
    struct class_from_wasm {
@@ -20,6 +21,19 @@ namespace eosio { namespace chain {
        */
       static auto value(apply_context& ctx) {
          return T(ctx);
+      }
+   };
+
+   template<>
+   struct class_from_wasm<transaction_context> {
+      /**
+       * by default this is just constructing an object
+       * @param wasm - the wasm_interface to use
+       * @return
+       */
+      template <typename ApplyCtx>
+      static auto &value(ApplyCtx& ctx) {
+         return ctx.trx_context;
       }
    };
 
@@ -54,9 +68,8 @@ namespace eosio { namespace chain {
          return value;
       }
 
-      template<typename U>
-      operator U *() const {
-         return static_cast<U *>(value);
+      operator T *() const {
+         return value;
       }
 
       T *value;
@@ -76,9 +89,8 @@ namespace eosio { namespace chain {
          return value;
       }
 
-      template<typename U>
-      operator U *() const {
-         return static_cast<U *>(value);
+      operator char *() const {
+         return value;
       }
 
       char *value;

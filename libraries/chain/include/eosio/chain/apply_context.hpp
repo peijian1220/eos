@@ -1,12 +1,7 @@
-/**
- *  @file
- *  @copyright defined in eos/LICENSE.txt
- */
 #pragma once
-#include <eosio/chain/block_trace.hpp>
+#include <eosio/chain/controller.hpp>
 #include <eosio/chain/transaction.hpp>
-#include <eosio/chain/transaction_metadata.hpp>
-#include <eosio/chain/contracts/contract_table_objects.hpp>
+#include <eosio/chain/contract_table_objects.hpp>
 #include <fc/utility.hpp>
 #include <sstream>
 #include <algorithm>
@@ -16,17 +11,14 @@ namespace chainbase { class database; }
 
 namespace eosio { namespace chain {
 
-using contracts::key_value_object;
-
-class chain_controller;
+class controller;
+class transaction_context;
 
 class apply_context {
    private:
       template<typename T>
       class iterator_cache {
          public:
-            typedef contracts::table_id_object table_id_object;
-
             iterator_cache(){
                _end_iterator_to_table.reserve(8);
                _iterator_to_object.reserve(32);
@@ -46,36 +38,37 @@ class apply_context {
 
             const table_id_object& get_table( table_id_object::id_type i )const {
                auto itr = _table_cache.find(i);
-               FC_ASSERT( itr != _table_cache.end(), "an invariant was broken, table should be in cache" );
+               EOS_ASSERT( itr != _table_cache.end(), table_not_in_cache, "an invariant was broken, table should be in cache" );
                return *itr->second.first;
             }
 
             int get_end_iterator_by_table_id( table_id_object::id_type i )const {
                auto itr = _table_cache.find(i);
-               FC_ASSERT( itr != _table_cache.end(), "an invariant was broken, table should be in cache" );
+               EOS_ASSERT( itr != _table_cache.end(), table_not_in_cache, "an invariant was broken, table should be in cache" );
                return itr->second.second;
             }
 
             const table_id_object* find_table_by_end_iterator( int ei )const {
-               FC_ASSERT( ei < -1, "not an end iterator" );
+               EOS_ASSERT( ei < -1, invalid_table_iterator, "not an end iterator" );
                auto indx = end_iterator_to_index(ei);
                if( indx >= _end_iterator_to_table.size() ) return nullptr;
                return _end_iterator_to_table[indx];
             }
 
             const T& get( int iterator ) {
-               FC_ASSERT( iterator != -1, "invalid iterator" );
-               FC_ASSERT( iterator >= 0, "dereference of end iterator" );
-               FC_ASSERT( iterator < _iterator_to_object.size(), "iterator out of range" );
+               EOS_ASSERT( iterator != -1, invalid_table_iterator, "invalid iterator" );
+               EOS_ASSERT( iterator >= 0, table_operation_not_permitted, "dereference of end iterator" );
+               EOS_ASSERT( (size_t)iterator < _iterator_to_object.size(), invalid_table_iterator, "iterator out of range" );
                auto result = _iterator_to_object[iterator];
-               FC_ASSERT( result, "dereference of deleted object" );
+               EOS_ASSERT( result, table_operation_not_permitted, "dereference of deleted object" );
                return *result;
             }
 
             void remove( int iterator ) {
-               FC_ASSERT( iterator != -1, "invalid iterator" );
-               FC_ASSERT( iterator >= 0, "cannot call remove on end iterators" );
-               FC_ASSERT( iterator < _iterator_to_object.size(), "iterator out of range" );
+               EOS_ASSERT( iterator != -1, invalid_table_iterator, "invalid iterator" );
+               EOS_ASSERT( iterator >= 0, table_operation_not_permitted, "cannot call remove on end iterators" );
+               EOS_ASSERT( (size_t)iterator < _iterator_to_object.size(), invalid_table_iterator, "iterator out of range" );
+
                auto obj_ptr = _iterator_to_object[iterator];
                if( !obj_ptr ) return;
                _iterator_to_object[iterator] = nullptr;
@@ -104,7 +97,7 @@ class apply_context {
             inline size_t end_iterator_to_index( int ei )const { return (-ei - 2); }
             /// Precondition: indx < _end_iterator_to_table.size() <= std::numeric_limits<int>::max()
             inline int index_to_end_iterator( size_t indx )const { return -(indx + 2); }
-      };
+      }; /// class iterator_cache
 
       template<typename>
       struct array_size;
@@ -132,7 +125,7 @@ class apply_context {
                sk_from_wasm = sk_in_table;
             }
 
-            static auto create_tuple(const contracts::table_id_object& tab, const secondary_key_type& secondary) {
+            static auto create_tuple(const table_id_object& tab, const secondary_key_type& secondary) {
                return boost::make_tuple( tab.id, secondary );
             }
       };
@@ -157,7 +150,7 @@ class apply_context {
                std::copy(sk_in_table.begin(), sk_in_table.end(), sk_from_wasm);
             }
 
-            static auto create_tuple(const contracts::table_id_object& tab, secondary_key_proxy_const_type sk_from_wasm) {
+            static auto create_tuple(const table_id_object& tab, secondary_key_proxy_const_type sk_from_wasm) {
                secondary_key_type secondary;
                std::copy(sk_from_wasm, sk_from_wasm + N, secondary.begin());
                return boost::make_tuple( tab.id, secondary );
@@ -183,20 +176,20 @@ class apply_context {
             int store( uint64_t scope, uint64_t table, const account_name& payer,
                        uint64_t id, secondary_key_proxy_const_type value )
             {
-               FC_ASSERT( payer != account_name(), "must specify a valid account to pay for new record" );
+               EOS_ASSERT( payer != account_name(), invalid_table_payer, "must specify a valid account to pay for new record" );
 
-               context.require_write_lock( scope );
+//               context.require_write_lock( scope );
 
-               const auto& tab = context.find_or_create_table( context.receiver, scope, table, payer );
+               const auto& tab = context.find_or_create_table( context.receiver, name(scope), name(table), payer );
 
-               const auto& obj = context.mutable_db.create<ObjectType>( [&]( auto& o ){
+               const auto& obj = context.db.create<ObjectType>( [&]( auto& o ){
                   o.t_id          = tab.id;
                   o.primary_key   = id;
                   secondary_key_helper_t::set(o.secondary_key, value);
                   o.payer         = payer;
                });
 
-               context.mutable_db.modify( tab, [&]( auto& t ) {
+               context.db.modify( tab, [&]( auto& t ) {
                  ++t.count;
                });
 
@@ -211,14 +204,14 @@ class apply_context {
                context.update_db_usage( obj.payer, -( config::billable_size_v<ObjectType> ) );
 
                const auto& table_obj = itr_cache.get_table( obj.t_id );
-               FC_ASSERT( table_obj.code == context.receiver, "db access violation" );
+               EOS_ASSERT( table_obj.code == context.receiver, table_access_violation, "db access violation" );
 
-               context.require_write_lock( table_obj.scope );
+//               context.require_write_lock( table_obj.scope );
 
-               context.mutable_db.modify( table_obj, [&]( auto& t ) {
+               context.db.modify( table_obj, [&]( auto& t ) {
                   --t.count;
                });
-               context.mutable_db.remove( obj );
+               context.db.remove( obj );
 
                if (table_obj.count == 0) {
                   context.remove_table(table_obj);
@@ -231,9 +224,9 @@ class apply_context {
                const auto& obj = itr_cache.get( iterator );
 
                const auto& table_obj = itr_cache.get_table( obj.t_id );
-               FC_ASSERT( table_obj.code == context.receiver, "db access violation" );
+               EOS_ASSERT( table_obj.code == context.receiver, table_access_violation, "db access violation" );
 
-               context.require_write_lock( table_obj.scope );
+//               context.require_write_lock( table_obj.scope );
 
                if( payer == account_name() ) payer = obj.payer;
 
@@ -244,19 +237,19 @@ class apply_context {
                   context.update_db_usage( payer, +(billing_size) );
                }
 
-               context.mutable_db.modify( obj, [&]( auto& o ) {
+               context.db.modify( obj, [&]( auto& o ) {
                  secondary_key_helper_t::set(o.secondary_key, secondary);
                  o.payer = payer;
                });
             }
 
             int find_secondary( uint64_t code, uint64_t scope, uint64_t table, secondary_key_proxy_const_type secondary, uint64_t& primary ) {
-               auto tab = context.find_table( code, scope, table );
+               auto tab = context.find_table( name(code), name(scope), name(table) );
                if( !tab ) return -1;
 
                auto table_end_itr = itr_cache.cache_table( *tab );
 
-               const auto* obj = context.db.find<ObjectType, contracts::by_secondary>( secondary_key_helper_t::create_tuple( *tab, secondary ) );
+               const auto* obj = context.db.find<ObjectType, by_secondary>( secondary_key_helper_t::create_tuple( *tab, secondary ) );
                if( !obj ) return table_end_itr;
 
                primary = obj->primary_key;
@@ -265,12 +258,12 @@ class apply_context {
             }
 
             int lowerbound_secondary( uint64_t code, uint64_t scope, uint64_t table, secondary_key_proxy_type secondary, uint64_t& primary ) {
-               auto tab = context.find_table( code, scope, table );
+               auto tab = context.find_table( name(code), name(scope), name(table) );
                if( !tab ) return -1;
 
                auto table_end_itr = itr_cache.cache_table( *tab );
 
-               const auto& idx = context.db.get_index< typename chainbase::get_index_type<ObjectType>::type, contracts::by_secondary >();
+               const auto& idx = context.db.get_index< typename chainbase::get_index_type<ObjectType>::type, by_secondary >();
                auto itr = idx.lower_bound( secondary_key_helper_t::create_tuple( *tab, secondary ) );
                if( itr == idx.end() ) return table_end_itr;
                if( itr->t_id != tab->id ) return table_end_itr;
@@ -282,12 +275,12 @@ class apply_context {
             }
 
             int upperbound_secondary( uint64_t code, uint64_t scope, uint64_t table, secondary_key_proxy_type secondary, uint64_t& primary ) {
-               auto tab = context.find_table( code, scope, table );
+               auto tab = context.find_table( name(code), name(scope), name(table) );
                if( !tab ) return -1;
 
                auto table_end_itr = itr_cache.cache_table( *tab );
 
-               const auto& idx = context.db.get_index< typename chainbase::get_index_type<ObjectType>::type, contracts::by_secondary >();
+               const auto& idx = context.db.get_index< typename chainbase::get_index_type<ObjectType>::type, by_secondary >();
                auto itr = idx.upper_bound( secondary_key_helper_t::create_tuple( *tab, secondary ) );
                if( itr == idx.end() ) return table_end_itr;
                if( itr->t_id != tab->id ) return table_end_itr;
@@ -299,7 +292,7 @@ class apply_context {
             }
 
             int end_secondary( uint64_t code, uint64_t scope, uint64_t table ) {
-               auto tab = context.find_table( code, scope, table );
+               auto tab = context.find_table( name(code), name(scope), name(table) );
                if( !tab ) return -1;
 
                return itr_cache.cache_table( *tab );
@@ -309,7 +302,7 @@ class apply_context {
                if( iterator < -1 ) return -1; // cannot increment past end iterator of index
 
                const auto& obj = itr_cache.get(iterator); // Check for iterator != -1 happens in this call
-               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, contracts::by_secondary>();
+               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, by_secondary>();
 
                auto itr = idx.iterator_to(obj);
                ++itr;
@@ -321,12 +314,12 @@ class apply_context {
             }
 
             int previous_secondary( int iterator, uint64_t& primary ) {
-               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, contracts::by_secondary>();
+               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, by_secondary>();
 
                if( iterator < -1 ) // is end iterator
                {
                   auto tab = itr_cache.find_table_by_end_iterator(iterator);
-                  FC_ASSERT( tab, "not a valid end iterator" );
+                  EOS_ASSERT( tab, invalid_table_iterator, "not a valid end iterator" );
 
                   auto itr = idx.upper_bound(tab->id);
                   if( idx.begin() == idx.end() || itr == idx.begin() ) return -1; // Empty index
@@ -353,12 +346,12 @@ class apply_context {
             }
 
             int find_primary( uint64_t code, uint64_t scope, uint64_t table, secondary_key_proxy_type secondary, uint64_t primary ) {
-               auto tab = context.find_table( code, scope, table );
+               auto tab = context.find_table( name(code), name(scope), name(table) );
                if( !tab ) return -1;
 
                auto table_end_itr = itr_cache.cache_table( *tab );
 
-               const auto* obj = context.db.find<ObjectType, contracts::by_primary>( boost::make_tuple( tab->id, primary ) );
+               const auto* obj = context.db.find<ObjectType, by_primary>( boost::make_tuple( tab->id, primary ) );
                if( !obj ) return table_end_itr;
                secondary_key_helper_t::get(secondary, obj->secondary_key);
 
@@ -366,12 +359,12 @@ class apply_context {
             }
 
             int lowerbound_primary( uint64_t code, uint64_t scope, uint64_t table, uint64_t primary ) {
-               auto tab = context.find_table( code, scope, table );
+               auto tab = context.find_table( name(code), name(scope), name(table) );
                if (!tab) return -1;
 
                auto table_end_itr = itr_cache.cache_table( *tab );
 
-               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, contracts::by_primary>();
+               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, by_primary>();
                auto itr = idx.lower_bound(boost::make_tuple(tab->id, primary));
                if (itr == idx.end()) return table_end_itr;
                if (itr->t_id != tab->id) return table_end_itr;
@@ -380,12 +373,12 @@ class apply_context {
             }
 
             int upperbound_primary( uint64_t code, uint64_t scope, uint64_t table, uint64_t primary ) {
-               auto tab = context.find_table( code, scope, table );
+               auto tab = context.find_table( name(code), name(scope), name(table) );
                if ( !tab ) return -1;
 
                auto table_end_itr = itr_cache.cache_table( *tab );
 
-               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, contracts::by_primary>();
+               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, by_primary>();
                auto itr = idx.upper_bound(boost::make_tuple(tab->id, primary));
                if (itr == idx.end()) return table_end_itr;
                if (itr->t_id != tab->id) return table_end_itr;
@@ -398,7 +391,7 @@ class apply_context {
                if( iterator < -1 ) return -1; // cannot increment past end iterator of table
 
                const auto& obj = itr_cache.get(iterator); // Check for iterator != -1 happens in this call
-               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, contracts::by_primary>();
+               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, by_primary>();
 
                auto itr = idx.iterator_to(obj);
                ++itr;
@@ -410,12 +403,12 @@ class apply_context {
             }
 
             int previous_primary( int iterator, uint64_t& primary ) {
-               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, contracts::by_primary>();
+               const auto& idx = context.db.get_index<typename chainbase::get_index_type<ObjectType>::type, by_primary>();
 
                if( iterator < -1 ) // is end iterator
                {
                   auto tab = itr_cache.find_table_by_end_iterator(iterator);
-                  FC_ASSERT( tab, "not a valid end iterator" );
+                  EOS_ASSERT( tab, invalid_table_iterator, "not a valid end iterator" );
 
                   auto itr = idx.upper_bound(tab->id);
                   if( idx.begin() == idx.end() || itr == idx.begin() ) return -1; // Empty table
@@ -450,36 +443,31 @@ class apply_context {
          private:
             apply_context&              context;
             iterator_cache<ObjectType>  itr_cache;
-      };
+      }; /// class generic_index
 
 
+   /// Constructor
+   public:
+      apply_context(controller& con, transaction_context& trx_ctx, uint32_t action_ordinal, uint32_t depth=0);
 
+   /// Execution methods:
+   public:
 
-      apply_context(chain_controller& con, chainbase::database& db, const action& a, const transaction_metadata& trx_meta, uint32_t depth=0)
-
-      :controller(con),
-       db(db),
-       act(a),
-       mutable_controller(con),
-       mutable_db(db),
-       used_authorizations(act.authorization.size(), false),
-       trx_meta(trx_meta),
-       idx64(*this),
-       idx128(*this),
-       idx256(*this),
-       idx_double(*this),
-       idx_long_double(*this),
-       recurse_depth(depth)
-      {
-         reset_console();
-      }
-
+      void exec_one();
       void exec();
+      void execute_inline( action&& a );
+      void execute_context_free_inline( action&& a );
+      void schedule_deferred_transaction( const uint128_t& sender_id, account_name payer, transaction&& trx, bool replace_existing );
+      bool cancel_deferred_transaction( const uint128_t& sender_id, account_name sender );
+      bool cancel_deferred_transaction( const uint128_t& sender_id ) { return cancel_deferred_transaction(sender_id, receiver); }
 
-      void execute_inline( action &&a );
-      void execute_context_free_inline( action &&a );
-      void execute_deferred( deferred_transaction &&trx );
-      void cancel_deferred( const uint128_t& sender_id );
+   protected:
+      uint32_t schedule_action( uint32_t ordinal_of_action_to_schedule, account_name receiver, bool context_free );
+      uint32_t schedule_action( action&& act_to_schedule, account_name receiver, bool context_free );
+
+
+   /// Authorization methods:
+   public:
 
       /**
        * @brief Require @ref account to have approved of this message
@@ -488,13 +476,11 @@ class apply_context {
        * This method will check that @ref account is listed in the message's declared authorizations, and marks the
        * authorization as used. Note that all authorizations on a message must be used, or the message is invalid.
        *
-       * @throws tx_missing_auth If no sufficient permission was found
+       * @throws missing_auth_exception If no sufficient permission was found
        */
       void require_authorization(const account_name& account);
       bool has_authorization(const account_name& account) const;
       void require_authorization(const account_name& account, const permission_name& permission);
-      void require_write_lock(const scope_name& scope);
-      void require_read_lock(const account_name& account, const scope_name& scope);
 
       /**
        * @return true if account exists, false if it does not
@@ -512,117 +498,99 @@ class apply_context {
        */
       bool has_recipient(account_name account)const;
 
-      bool                     all_authorizations_used()const;
-      vector<permission_level> unused_authorizations()const;
+   /// Console methods:
+   public:
 
-      vector<account_name> get_active_producers() const;
-
-      const bytes&         get_packed_transaction();
-
-      const chain_controller&       controller;
-      const chainbase::database&    db;  ///< database where state is stored
-      const action&                 act; ///< message being applied
-      account_name                  receiver; ///< the code that is currently running
-      bool                          privileged   = false;
-      bool                          context_free = false;
-      bool                          used_context_free_api = false;
-
-      chain_controller&             mutable_controller;
-      chainbase::database&          mutable_db;
-
-
-      ///< Parallel to act.authorization; tracks which permissions have been used while processing the message
-      vector<bool> used_authorizations;
-
-      const transaction_metadata&   trx_meta;
-
-      struct apply_results {
-         vector<action_trace> applied_actions;
-         vector<fc::static_variant<deferred_transaction, deferred_reference>> deferred_transaction_requests;
-         size_t deferred_transactions_count = 0;
-      };
-
-      apply_results results;
-
-      std::ostringstream& get_console_stream() { return _pending_console_output; }
-
-      template<typename T>
-      void console_append(T val) {
-         _pending_console_output << val;
+      void console_append( const string& val ) {
+         _pending_console_output += val;
       }
 
-      template<typename T, typename ...Ts>
-      void console_append(T val, Ts ...rest) {
-         console_append(val);
-         console_append(rest...);
-      };
+   /// Database methods:
+   public:
 
-      inline void console_append_formatted(const string& fmt, const variant_object& vo) {
-         console_append(fc::format_string(fmt, vo));
-      }
+      void update_db_usage( const account_name& payer, int64_t delta );
 
-      void checktime(uint32_t instruction_count);
+      int  db_store_i64( name scope, name table, const account_name& payer, uint64_t id, const char* buffer, size_t buffer_size );
+      void db_update_i64( int iterator, account_name payer, const char* buffer, size_t buffer_size );
+      void db_remove_i64( int iterator );
+      int  db_get_i64( int iterator, char* buffer, size_t buffer_size );
+      int  db_next_i64( int iterator, uint64_t& primary );
+      int  db_previous_i64( int iterator, uint64_t& primary );
+      int  db_find_i64( name code, name scope, name table, uint64_t id );
+      int  db_lowerbound_i64( name code, name scope, name table, uint64_t id );
+      int  db_upperbound_i64( name code, name scope, name table, uint64_t id );
+      int  db_end_i64( name code, name scope, name table );
+
+   private:
+
+      const table_id_object* find_table( name code, name scope, name table );
+      const table_id_object& find_or_create_table( name code, name scope, name table, const account_name &payer );
+      void                   remove_table( const table_id_object& tid );
+
+      int  db_store_i64( name code, name scope, name table, const account_name& payer, uint64_t id, const char* buffer, size_t buffer_size );
+
+
+   /// Misc methods:
+   public:
+
 
       int get_action( uint32_t type, uint32_t index, char* buffer, size_t buffer_size )const;
       int get_context_free_data( uint32_t index, char* buffer, size_t buffer_size )const;
+      vector<account_name> get_active_producers() const;
+      bytes  get_packed_transaction();
 
-      void update_db_usage( const account_name& payer, int64_t delta );
-      void check_auth( const transaction& trx, const vector<permission_level>& perm );
+      uint64_t next_global_sequence();
+      uint64_t next_recv_sequence( const account_metadata_object& receiver_account );
+      uint64_t next_auth_sequence( account_name actor );
 
-      int  db_store_i64( uint64_t scope, uint64_t table, const account_name& payer, uint64_t id, const char* buffer, size_t buffer_size );
-      void db_update_i64( int iterator, account_name payer, const char* buffer, size_t buffer_size );
-      void db_remove_i64( int iterator );
-      int db_get_i64( int iterator, char* buffer, size_t buffer_size );
-      int db_next_i64( int iterator, uint64_t& primary );
-      int db_previous_i64( int iterator, uint64_t& primary );
-      int db_find_i64( uint64_t code, uint64_t scope, uint64_t table, uint64_t id );
-      int db_lowerbound_i64( uint64_t code, uint64_t scope, uint64_t table, uint64_t id );
-      int db_upperbound_i64( uint64_t code, uint64_t scope, uint64_t table, uint64_t id );
-      int db_end_i64( uint64_t code, uint64_t scope, uint64_t table );
+      void add_ram_usage( account_name account, int64_t ram_delta );
+      void finalize_trace( action_trace& trace, const fc::time_point& start );
 
-      generic_index<contracts::index64_object>    idx64;
-      generic_index<contracts::index128_object>   idx128;
-      generic_index<contracts::index256_object, uint128_t*, const uint128_t*>   idx256;
-      generic_index<contracts::index_double_object> idx_double;
-      generic_index<contracts::index_long_double_object> idx_long_double;
+      bool is_context_free()const { return context_free; }
+      bool is_privileged()const { return privileged; }
+      action_name get_receiver()const { return receiver; }
+      const action& get_action()const { return *act; }
 
-      uint32_t                                    recurse_depth;  // how deep inline actions can recurse
-      
-      void add_cpu_usage( const uint64_t usage );
+      action_name get_sender() const;
+
+   /// Fields:
+   public:
+
+      controller&                   control;
+      chainbase::database&          db;  ///< database where state is stored
+      transaction_context&          trx_context; ///< transaction context in which the action is running
 
    private:
-      iterator_cache<key_value_object> keyval_cache;
+      const action*                 act = nullptr; ///< action being applied
+      // act pointer may be invalidated on call to trx_context.schedule_action
+      account_name                  receiver; ///< the code that is currently running
+      uint32_t                      recurse_depth; ///< how deep inline actions can recurse
+      uint32_t                      first_receiver_action_ordinal = 0;
+      uint32_t                      action_ordinal = 0;
+      bool                          privileged   = false;
+      bool                          context_free = false;
 
-      void append_results(apply_results &&other) {
-         fc::move_append(results.applied_actions, std::move(other.applied_actions));
-         fc::move_append(results.deferred_transaction_requests, std::move(other.deferred_transaction_requests));
-         results.deferred_transactions_count += other.deferred_transactions_count;
-      }
+   public:
+      generic_index<index64_object>                                  idx64;
+      generic_index<index128_object>                                 idx128;
+      generic_index<index256_object, uint128_t*, const uint128_t*>   idx256;
+      generic_index<index_double_object>                             idx_double;
+      generic_index<index_long_double_object>                        idx_long_double;
 
-      void reset_console();
+   private:
 
-      void exec_one();
+      iterator_cache<key_value_object>    keyval_cache;
+      vector< std::pair<account_name, uint32_t> > _notified; ///< keeps track of new accounts to be notifed of current message
+      vector<uint32_t>                    _inline_actions; ///< action_ordinals of queued inline actions
+      vector<uint32_t>                    _cfa_inline_actions; ///< action_ordinals of queued inline context-free actions
+      std::string                         _pending_console_output;
+      flat_set<account_delta>             _account_ram_deltas; ///< flat_set of account_delta so json is an array of objects
 
-      using table_id_object = contracts::table_id_object;
-      const table_id_object* find_table( name code, name scope, name table );
-      const table_id_object& find_or_create_table( name code, name scope, name table, const account_name &payer );
-      void remove_table( const table_id_object& tid );
-
-      int  db_store_i64( uint64_t code, uint64_t scope, uint64_t table, const account_name& payer, uint64_t id, const char* buffer, size_t buffer_size );
-
-      vector<account_name>                _notified; ///< keeps track of new accounts to be notifed of current message
-      vector<action>                      _inline_actions; ///< queued inline messages
-      vector<action>                      _cfa_inline_actions; ///< queued inline messages
-      std::ostringstream                  _pending_console_output;
-
-      vector<shard_lock>                  _read_locks;
-      vector<scope_name>                  _write_scopes;
-      bytes                               _cached_trx;
-      uint64_t                            _cpu_usage;
+      //bytes                               _cached_trx;
 };
 
 using apply_handler = std::function<void(apply_context&)>;
 
 } } // namespace eosio::chain
 
-FC_REFLECT(eosio::chain::apply_context::apply_results, (applied_actions)(deferred_transaction_requests)(deferred_transactions_count))
+//FC_REFLECT(eosio::chain::apply_context::apply_results, (applied_actions)(deferred_transaction_requests)(deferred_transactions_count))

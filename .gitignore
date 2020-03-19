@@ -5,16 +5,20 @@
 *.bc
 *.wast
 *.wast.hpp
-*.wasm
 *.s
 *.dot
 *.abi.hpp
 *.cmake
+!.cicd
+!CMakeModules/*.cmake
+*.ninja
 \#*
 \.#*
 CMakeCache.txt
 CMakeFiles
 cmake_install.cmake
+cmake-build-debug/
+cmake-build-release/
 Makefile
 compile_commands.json
 moc_*
@@ -29,6 +33,9 @@ libraries/egenesis/egenesis_full.cpp
 libraries/egenesis/embed_genesis
 libraries/types/type_generator
 libraries/types/types_test
+libraries/fc/test/crypto/test_cypher_suites
+libraries/testing/chain_tester
+
 
 libraries/wallet/Doxyfile
 libraries/wallet/api_documentation.cpp
@@ -39,43 +46,44 @@ libraries/wasm-jit/Source/Programs/Disassemble
 libraries/wasm-jit/Source/Programs/Test
 libraries/wasm-jit/Source/Programs/wavm
 
-programs/cli_wallet/cli_wallet
+programs/cleos/cleos
 programs/js_operation_serializer/js_operation_serializer
-programs/witness_node/witness_node
 programs/data-dir
-programs/eos-walletd/eos-walletd
-programs/eosiod/eosiod
-programs/eosioc/eosioc
-programs/launcher/launcher
 programs/eosio-abigen/eosio-abigen
+programs/cleos/config.hpp
+programs/eosio-applesedemo/eosio-applesedemo
+programs/eosio-launcher/config.hpp
+programs/eosio-launcher/eosio-launcher
+programs/keosd/keosd
+programs/nodeos/config.hpp
+programs/nodeos/nodeos
 
 scripts/tn_init.sh
 
-tests/app_test
-tests/chain_bench
-tests/chain_test
-tests/intense_test
-tests/performance_test
-tests/tests/config.hpp
+tests/plugin_test
+unittests/unit_test
 
 doxygen
+eos.doxygen
 
 wallet.json
 witness_node_data_dir
 
 *.wallet
 
-programs/witness_node/object_database/*
-
-object_database/*
-
 *.pyc
 *.pyo
 
+Testing/*
+build.tar.gz
 build/*
 build-debug/*
 
 etc/eosio/node_*
 var/lib/node_*
 .vscode
+.idea/
+*.iws
 .DS_Store
+
+!*.swagger.*

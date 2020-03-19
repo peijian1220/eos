@@ -1,52 +1,27 @@
 #!/usr/bin/env python3
 
-import testUtils
+from testUtils import Utils
+from Cluster import Cluster
+from WalletMgr import WalletMgr
+from TestHelper import TestHelper
 
-import argparse
 import random
-import signal
 
 ###############################################################
-# Test for different nodes restart scenarios.
-# Nodes can be producing or non-producing.
-# -p <producing nodes count>
-# -c <chain strategy[replay|resync|none]>
-# -s <topology>
-# -d <delay between nodes startup>
-# -v <verbose logging>
-# --kill-sig <kill signal [term|kill]>
-# --kill-count <nodeos instances to kill>
-# --dont-kill <Leave cluster running after test finishes>
-# --dump-error-details <Upon error print etc/eosio/node_*/config.ini and var/lib/node_*/stderr.log to stdout>
-# --keep-logs <Don't delete var/lib/node_* folders upon test completion>
+# restart-scenarios-test
+#
+# Tests restart scenarios for nodeos.  Uses "-c" flag to indicate "replay" (--replay-blockchain), "resync"
+# (--delete-all-blocks), "hardReplay"(--hard-replay-blockchain), and "none" to indicate what kind of restart flag should
+# be used. This is one of the only test that actually verify that nodeos terminates with a good exit status.
+#
 ###############################################################
 
 
-Print=testUtils.Utils.Print
+Print=Utils.Print
+errorExit=Utils.errorExit
 
-def errorExit(msg="", errorCode=1):
-    Print("ERROR:", msg)
-    exit(errorCode)
-
-parser = argparse.ArgumentParser()
-parser.add_argument("-p", type=int, help="producing nodes count", default=2)
-parser.add_argument("-d", type=int, help="delay between nodes startup", default=1)
-parser.add_argument("-s", type=str, help="topology", default="mesh")
-parser.add_argument("-c", type=str, help="chain strategy[%s|%s|%s]" %
-                    (testUtils.Utils.SyncResyncTag, testUtils.Utils.SyncReplayTag, testUtils.Utils.SyncNoneTag),
-                    default=testUtils.Utils.SyncResyncTag)
-parser.add_argument("--kill-sig", type=str, help="kill signal[%s|%s]" %
-                    (testUtils.Utils.SigKillTag, testUtils.Utils.SigTermTag), default=testUtils.Utils.SigKillTag)
-parser.add_argument("--kill-count", type=int, help="nodeos instances to kill", default=-1)
-parser.add_argument("-v", help="verbose logging", action='store_true')
-parser.add_argument("--dont-kill", help="Leave cluster running after test finishes", action='store_true')
-parser.add_argument("--dump-error-details",
-                    help="Upon error print etc/eosio/node_*/config.ini and var/lib/node_*/stderr.log to stdout",
-                    action='store_true')
-parser.add_argument("--keep-logs", help="Don't delete var/lib/node_* folders upon test completion",
-                    action='store_true')
-
-args = parser.parse_args()
+args=TestHelper.parse_args({"-p","-d","-s","-c","--kill-sig","--kill-count","--keep-logs"
+                            ,"--dump-error-details","-v","--leave-running","--clean-run"})
 pnodes=args.p
 topo=args.s
 delay=args.d
@@ -55,31 +30,36 @@ debug=args.v
 total_nodes = pnodes
 killCount=args.kill_count if args.kill_count > 0 else 1
 killSignal=args.kill_sig
-killEosInstances= not args.dont_kill
+killEosInstances= not args.leave_running
 dumpErrorDetails=args.dump_error_details
 keepLogs=args.keep_logs
+killAll=args.clean_run
 
 seed=1
-testUtils.Utils.Debug=debug
+Utils.Debug=debug
 testSuccessful=False
 
-
 random.seed(seed) # Use a fixed seed for repeatability.
-cluster=testUtils.Cluster()
-walletMgr=testUtils.WalletMgr(False)
+cluster=Cluster(walletd=True)
+walletMgr=WalletMgr(True)
 
 try:
+    TestHelper.printSystemInfo("BEGIN")
+    cluster.setWalletMgr(walletMgr)
+
     cluster.setChainStrategy(chainSyncStrategyStr)
     cluster.setWalletMgr(walletMgr)
 
-    cluster.killall()
+    cluster.killall(allInstances=killAll)
     cluster.cleanup()
+    walletMgr.killall(allInstances=killAll)
+    walletMgr.cleanup()
 
     Print ("producing nodes: %d, topology: %s, delay between nodes launch(seconds): %d, chain sync strategy: %s" % (
     pnodes, topo, delay, chainSyncStrategyStr))
 
     Print("Stand up cluster")
-    if cluster.launch(pnodes, total_nodes, topo=topo, delay=delay) is False:
+    if cluster.launch(pnodes=pnodes, totalNodes=total_nodes, topo=topo, delay=delay) is False:
         errorExit("Failed to stand up eos cluster.")
 
     Print ("Wait for Cluster stabilization")
@@ -87,37 +67,26 @@ try:
     if not cluster.waitOnClusterBlockNumSync(3):
         errorExit("Cluster never stabilized")
 
+    Print("Stand up EOS wallet keosd")
     accountsCount=total_nodes
     walletName="MyWallet"
     Print("Creating wallet %s if one doesn't already exist." % walletName)
-    wallet=walletMgr.create(walletName)
-    if wallet is None:
-        errorExit("Failed to create wallet %s" % (walletName))
+    wallet=walletMgr.create(walletName, [cluster.eosioAccount,cluster.defproduceraAccount,cluster.defproducerbAccount])
 
     Print ("Populate wallet with %d accounts." % (accountsCount))
     if not cluster.populateWallet(accountsCount, wallet):
         errorExit("Wallet initialization failed.")
 
-    initaAccount=cluster.initaAccount
+    defproduceraAccount=cluster.defproduceraAccount
+    eosioAccount=cluster.eosioAccount
 
-    Print("Importing keys for account %s into wallet %s." % (initaAccount.name, wallet.name))
-    if not walletMgr.importKey(initaAccount, wallet):
-        errorExit("Failed to import key for account %s" % (initaAccount.name))
+    Print("Importing keys for account %s into wallet %s." % (defproduceraAccount.name, wallet.name))
+    if not walletMgr.importKey(defproduceraAccount, wallet):
+        errorExit("Failed to import key for account %s" % (defproduceraAccount.name))
 
     Print("Create accounts.")
-    #if not cluster.createAccounts(wallet):
-    if not cluster.createAccounts(initaAccount):
+    if not cluster.createAccounts(eosioAccount):
         errorExit("Accounts creation failed.")
-
-    Print("Wait on cluster sync.")
-    if not cluster.waitOnClusterSync():
-        errorExit("Cluster sync wait failed.")
-
-    # TBD: Known issue (Issue 2043) that 'get currency balance' doesn't return balance.
-    #  Uncomment when functional
-    # Print("Spread funds and validate")
-    # if not cluster.spreadFundsAndValidate(10):
-    #     errorExit("Failed to spread and validate funds.")
 
     Print("Wait on cluster sync.")
     if not cluster.waitOnClusterSync():
@@ -128,18 +97,16 @@ try:
         errorExit("Failed to kill Eos instances")
     Print("nodeos instances killed.")
 
-    # TBD: Known issue (Issue 2043) that 'get currency balance' doesn't return balance.
-    #  Uncomment when functional
-    # Print("Spread funds and validate")
-    # if not cluster.spreadFundsAndValidate(10):
-    #     errorExit("Failed to spread and validate funds.")
+    Print("Spread funds and validate")
+    if not cluster.spreadFundsAndValidate(10):
+        errorExit("Failed to spread and validate funds.")
 
     Print("Wait on cluster sync.")
     if not cluster.waitOnClusterSync():
         errorExit("Cluster sync wait failed.")
 
     Print ("Relaunch dead cluster nodes instances.")
-    if cluster.relaunchEosInstances() is False:
+    if cluster.relaunchEosInstances(cachePopen=True) is False:
         errorExit("Failed to relaunch Eos instances")
     Print("nodeos instances relaunched.")
 
@@ -148,31 +115,24 @@ try:
         errorExit("Cluster never synchronized")
     Print ("Cluster synched")
 
-    # TBD: Known issue (Issue 2043) that 'get currency balance' doesn't return balance.
-    #  Uncomment when functional
-    # Print("Spread funds and validate")
-    # if not cluster.spreadFundsAndValidate(10):
-    #     errorExit("Failed to spread and validate funds.")
+    Print("Spread funds and validate")
+    if not cluster.spreadFundsAndValidate(10):
+        errorExit("Failed to spread and validate funds.")
 
     Print("Wait on cluster sync.")
     if not cluster.waitOnClusterSync():
         errorExit("Cluster sync wait failed.")
 
+    if killEosInstances:
+        atLeastOne=False
+        for node in cluster.getNodes():
+            if node.popenProc is not None:
+                atLeastOne=True
+                node.interruptAndVerifyExitStatus()
+        assert atLeastOne, "Test is setup to verify that a cleanly interrupted nodeos exits with an exit status of 0, but this test may no longer be setup to do that"
+
     testSuccessful=True
 finally:
-    if not testSuccessful and dumpErrorDetails:
-        cluster.dumpErrorDetails()
-        walletMgr.dumpErrorDetails()
-        Print("== Errors see above ==")
-
-    if killEosInstances:
-        Print("Shut down the cluster%s" % (" and cleanup." if (testSuccessful and not keepLogs) else "."))
-        cluster.killall()
-        walletMgr.killall()
-        if testSuccessful and not keepLogs:
-            Print("Cleanup cluster and wallet data.")
-            cluster.cleanup()
-            walletMgr.cleanup()
-    pass
+    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, killEosInstances=killEosInstances, killWallet=killEosInstances, keepLogs=keepLogs, cleanRun=killAll, dumpErrorDetails=dumpErrorDetails)
 
 exit(0)
